@@ -1,0 +1,578 @@
+Importing MNIST DATASET AND APPLYING CNN ARCHITECTURE WITH DIFFERENET VARIATIONS (BATCH NORMALISATION AND DROP OUT AND 
+COMPLEXITY OF ARCHITECTURE)
+batch normalisation along drop out performed better (99.22% accuracy)
+
+from torchvision import transforms
+data_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(p=1),
+        transforms.RandomVerticalFlip(p=1),
+        transforms.ToTensor(),
+    ])
+from torchvision import datasets
+# loading MNIST training dataset
+train_data=datasets.MNIST(root='./data', train=True, download=True,transform=data_transform)
+val_data=datasets.MNIST(root='./data', train=False, download=True,transform=data_transform)
+x_train, y_train=train_data.data,train_data.targets
+x_val,y_val=val_data.data, val_data.targets
+
+if len(x_train.shape)==3:
+    x_train=x_train.unsqueeze(1)
+print(x_train.shape)
+
+if len(x_val.shape)==3:
+    x_val=x_val.unsqueeze(1)
+print(x_val.shape)
+
+from torchvision import utils
+import matplotlib.pyplot as plt
+import numpy as np
+%matplotlib inline
+
+from torch.utils.data import TensorDataset
+
+# wrap tensors into a dataset
+train_ds = TensorDataset(x_train, y_train)
+val_ds = TensorDataset(x_val, y_val)
+from torch.utils.data import DataLoader
+
+# create a data loader from dataset
+train_dl = DataLoader(train_ds, batch_size=16)
+val_dl = DataLoader(val_ds, batch_size=16)
+import torch
+import torch.nn as nn
+
+class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),         
+            nn.ReLU(),
+            nn.Conv2d(64,64, 3,1,1),
+            nn.ReLU()
+        )
+        self.fc_model = nn.Sequential(
+            nn.Linear(50176,1000),         
+            nn.ReLU(inplace=True),            
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+vet=vgg()
+
+if torch.cuda.is_available():
+     vet.cuda()
+from torch import optim
+opt = optim.Adam(vt.parameters(), lr=1e-4)
+from torch.optim.lr_scheduler import CosineAnnealingLR
+lr_scheduler = CosineAnnealingLR(opt,T_max=2,eta_min=1e-5)
+
+def get_lr(opt):
+    for param_group in opt.param_groups:
+        return param_group['lr']
+
+current_lr=get_lr(opt)
+print('current lr={}'.format(current_lr))
+def metrics_batch(output, target):    
+    pred = output.argmax(dim=1, keepdim=True)       
+    corrects=pred.eq(target.view_as(pred)).sum().item()    
+    return corrects
+def loss_batch(loss_func, output, target, opt=None):      
+    loss = loss_func(output, target)      
+    metric_b = metrics_batch(output,target)    
+    if opt is not None:        
+        opt.zero_grad()        
+        loss.backward()       
+        opt.step()    
+    return loss.item(), metric_b
+def loss_epoch(model,loss_func,dataset_dl,sanity_check=False,opt=None):    
+    running_loss=0.0   
+    running_metric=0.0    
+    len_data=len(dataset_dl.dataset)
+    for xb, yb in dataset_dl:        
+        xb=xb.type(torch.float).to(device)
+        yb=yb.to(device)        
+        output=model(xb)        
+        loss_b,metric_b=loss_batch(loss_func, output, yb, opt)       
+        running_loss+=loss_b
+        if metric_b is not None:          
+             running_metric+=metric_b        
+        if sanity_check is True:           
+            break
+    loss=running_loss/float(len_data)
+    metric=running_metric/float(len_data)
+    return loss, metric
+def train_val(model, params):   
+    num_epochs=params["num_epochs"]   
+    loss_func=params["loss_func"]   
+    opt=params["optimizer"]    
+    train_dl=params["train_dl"]    
+    val_dl=params["val_dl"]    
+    sanity_check=params["sanity_check"]    
+    lr_scheduler=params["lr_scheduler"]    
+    path2weights=params["path2weights"]
+    loss_history={       
+        "train": [],       
+        "val": [],    }      
+    metric_history={        
+        "train": [],       
+        "val": [],    }
+    best_model_wts = copy.deepcopy(model.state_dict())  
+    best_loss=float('inf')
+    for epoch in range(num_epochs):      
+        current_lr=get_lr(opt)       
+        print('Epoch {}/{}, current lr={}'.format(epoch, num_epochs - 1, current_lr))              
+        model.train()        
+        train_loss, train_metric=loss_epoch(model,loss_func,train_dl,sanity_check,opt)       
+        loss_history["train"].append(train_loss)
+        metric_history["train"].append(train_metric)
+        model.eval()       
+
+        with torch.no_grad():          
+            val_loss, val_metric=loss_epoch(model,loss_func,val_dl,sanity_check) 
+            loss_history["val"].append(val_loss)      
+        metric_history["val"].append(val_metric)
+        if val_loss < best_loss:    
+            best_loss = val_loss         
+            best_model_wts = copy.deepcopy(model.state_dict())        
+            torch.save(model.state_dict(), path2weights)         
+            print("Copied best model weights!")
+        lr_scheduler.step()
+        print("train loss: %.6f, dev loss: %.6f, accuracy: %.2f" %(train_loss,val_loss,100*val_metric))
+        print("-"*10) 
+    model.load_state_dict(best_model_wts)    
+    return model, loss_history, metric_history
+import copy
+loss_func = nn.CrossEntropyLoss(reduction="sum")
+opt = optim.Adam(vet.parameters(), lr=1e-4)
+lr_scheduler = CosineAnnealingLR(opt,T_max=5,eta_min=1e-6)
+params_train={
+ "num_epochs": 15,
+ "optimizer": opt,
+ "loss_func": loss_func,
+ "train_dl": train_dl,
+ "val_dl": val_dl,
+ "sanity_check": False,
+ "lr_scheduler": lr_scheduler,
+ "path2weights": "./vet.pt",
+}
+params_train={
+    "num_epochs": 5,
+ "optimizer": opt,
+ "loss_func": loss_func,
+ "train_dl": train_dl,
+ "val_dl": val_dl,
+ "sanity_check": False,
+ "lr_scheduler": lr_scheduler,
+ "path2weights": "./vet.pt",
+}
+
+
+
+device='cuda:0'
+vet,loss_hist,metric_hist=train_val(vet,params_train)
+
+
+Epoch 0/4, current lr=0.0001
+Copied best model weights!
+train loss: 0.184290, dev loss: 0.082369, accuracy: 97.23
+----------
+Epoch 1/4, current lr=9.05463412215599e-05
+train loss: 0.032380, dev loss: 0.091434, accuracy: 97.52
+----------
+Epoch 2/4, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.013476, dev loss: 0.062243, accuracy: 98.62
+----------
+Epoch 3/4, current lr=3.5203658778440106e-05
+Copied best model weights!
+train loss: 0.003116, dev loss: 0.058340, accuracy: 98.72
+----------
+Epoch 4/4, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.000335, dev loss: 0.053876, accuracy: 98.89
+----------
+Epoch 0/4, current lr=1e-06
+Copied best model weights!
+train loss: 0.000019, dev loss: 0.053753, accuracy: 98.90
+----------
+Epoch 1/4, current lr=1.0453658778440097e-05
+train loss: 0.000007, dev loss: 0.060777, accuracy: 98.94
+----------
+Epoch 2/4, current lr=3.52036587784401e-05
+train loss: 0.000000, dev loss: 0.076389, accuracy: 98.85
+----------
+Epoch 3/4, current lr=6.57963412215599e-05
+train loss: 0.011197, dev loss: 0.089963, accuracy: 98.43
+----------
+Epoch 4/4, current lr=9.05463412215599e-05
+train loss: 0.015171, dev loss: 0.112455, accuracy: 98.32
+            
+            
+def __init__(self): 
+    super(vgg, self).__init__()
+    self.cnn_model = nn.Sequential(
+        nn.Conv2d(1, 64, 3,1,1),         
+        nn.ReLU(),
+             
+        nn.Conv2d(64,64, 3,1,1),       
+        nn.ReLU()
+        
+        )
+        self.fc_model = nn.Sequential(
+            nn.Linear(50176,1000),         # (N, 400) -> (N, 120)
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.25),# (N, 84)  -> (N, 10)
+            nn.Linear(1000,10)
+        )
+        
+ def forward(self, x):
+    x = self.cnn_model(x)
+    x = x.view(x.size(0), -1)
+    x = self.fc_model(x)
+    return x
+Epoch 0/9, current lr=0.0001
+Copied best model weights!
+train loss: 0.194751, dev loss: 0.116899, accuracy: 96.38
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.036704, dev loss: 0.077465, accuracy: 97.94
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.014214, dev loss: 0.071801, accuracy: 98.36
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+Copied best model weights!
+train loss: 0.003876, dev loss: 0.059804, accuracy: 98.85
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+train loss: 0.000534, dev loss: 0.060781, accuracy: 98.85
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.000168, dev loss: 0.057271, accuracy: 98.92
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.000118, dev loss: 0.061616, accuracy: 98.93
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.001897, dev loss: 0.078813, accuracy: 98.60
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.008457, dev loss: 0.111654, accuracy: 98.47
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.014527, dev loss: 0.110806, accuracy: 98.30
+----------
+
+
+class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),         
+            nn.ReLU(),
+             
+            nn.Conv2d(64,64, 3,1,1),        
+            nn.ReLU()
+             
+        )
+        self.fc_model = nn.Sequential(
+            nn.Linear(50176,1000),       
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.5),
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+Copied best model weights!
+train loss: 0.167694, dev loss: 0.067433, accuracy: 97.84
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.040407, dev loss: 0.066495, accuracy: 98.01
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.015367, dev loss: 0.050022, accuracy: 98.66
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+train loss: 0.005177, dev loss: 0.050234, accuracy: 98.91
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.001526, dev loss: 0.044214, accuracy: 99.03
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.000797, dev loss: 0.042854, accuracy: 99.06
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.000436, dev loss: 0.048084, accuracy: 98.98
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.001920, dev loss: 0.060347, accuracy: 98.87
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.006811, dev loss: 0.090051, accuracy: 98.65
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.013917, dev loss: 0.081342, accuracy: 98.51
+----------
+
+class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),         
+            nn.ReLU(),
+             
+            nn.Conv2d(64,64, 3,1,1),       
+            nn.ReLU()
+             
+        )
+        self.fc_model = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(50176,1000),         # (N, 400) -> (N, 120)
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.5),# (N, 84)  -> (N, 10)
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+    
+Copied best model weights!
+train loss: 0.220339, dev loss: 0.072297, accuracy: 97.84
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.069440, dev loss: 0.058866, accuracy: 98.32
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.036374, dev loss: 0.048189, accuracy: 98.73
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+Copied best model weights!
+train loss: 0.016287, dev loss: 0.046807, accuracy: 98.88
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.008161, dev loss: 0.040969, accuracy: 99.11
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.005728, dev loss: 0.040456, accuracy: 99.13
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.005440, dev loss: 0.046622, accuracy: 98.99
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.009287, dev loss: 0.046702, accuracy: 98.94
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.019095, dev loss: 0.061706, accuracy: 98.71
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.027561, dev loss: 0.064235, accuracy: 98.71
+----------
+[ ]:class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),         
+            nn.ReLU(),
+            nn.Dropout(0.25),
+             
+            nn.Conv2d(64,64, 3,1,1),         
+            nn.ReLU()
+             
+        )
+        self.fc_model = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(50176,1000),         
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.5),
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+v4=vgg()
+train loss: 0.281497, dev loss: 0.072604, accuracy: 97.55
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.098154, dev loss: 0.054070, accuracy: 98.28
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.057434, dev loss: 0.043448, accuracy: 98.57
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+Copied best model weights!
+train loss: 0.035142, dev loss: 0.037967, accuracy: 98.85
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.020156, dev loss: 0.034220, accuracy: 98.93
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.018633, dev loss: 0.033731, accuracy: 98.96
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.017604, dev loss: 0.033923, accuracy: 98.97
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.020728, dev loss: 0.040274, accuracy: 98.92
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.029107, dev loss: 0.048879, accuracy: 98.66
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.038900, dev loss: 0.046980, accuracy: 98.57
+----------
+
+----------
+class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),    
+            nn.BatchNorm2d(num_features=64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.ReLU(),
+            nn.Conv2d(64,64, 3,1,1),     
+            nn.BatchNorm2d(num_features=64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),  
+            nn.ReLU()
+              # (N,16, 10,, 10) -> (N, 16, 5, 5)
+        )
+        self.fc_model = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(50176,1000),         
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.5),
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+
+    Epoch 0/9, current lr=0.0001
+Copied best model weights!
+train loss: 0.157362, dev loss: 0.068108, accuracy: 97.68
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.068599, dev loss: 0.039410, accuracy: 98.74
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.039398, dev loss: 0.038612, accuracy: 98.71
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+Copied best model weights!
+train loss: 0.021355, dev loss: 0.031203, accuracy: 99.10
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.011851, dev loss: 0.028490, accuracy: 99.20
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.009573, dev loss: 0.027191, accuracy: 99.22
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.009728, dev loss: 0.029867, accuracy: 99.15
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.013965, dev loss: 0.032797, accuracy: 99.09
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.020401, dev loss: 0.036097, accuracy: 98.89
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.026780, dev loss: 0.040548, accuracy: 98.94
+----------
+class vgg(nn.Module):
+    def __init__(self): 
+        super(vgg, self).__init__()
+        self.cnn_model = nn.Sequential(
+            nn.Conv2d(1, 64, 3,1,1),    
+            nn.BatchNorm2d(num_features=64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.ReLU(),
+            nn.Conv2d(64,64, 3,1,1),     
+            nn.BatchNorm2d(num_features=64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True), 
+            nn.ReLU()
+              # (N,16, 10,, 10) -> (N, 16, 5, 5)
+        )
+        self.fc_model = nn.Sequential(
+            nn.Dropout(0.25),
+            nn.Linear(50176,1000),     
+            nn.ReLU(inplace=True),    
+            nn.Dropout(0.25),
+            nn.Linear(1000,10)
+        )
+        
+    def forward(self, x):
+        x = self.cnn_model(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_model(x)
+        return x
+vet2=vgg()
+
+Epoch 0/9, current lr=0.0001
+Copied best model weights!
+train loss: 0.132762, dev loss: 0.098031, accuracy: 96.69
+----------
+Epoch 1/9, current lr=9.05463412215599e-05
+Copied best model weights!
+train loss: 0.050057, dev loss: 0.043647, accuracy: 98.66
+----------
+Epoch 2/9, current lr=6.57963412215599e-05
+Copied best model weights!
+train loss: 0.024550, dev loss: 0.041533, accuracy: 98.88
+----------
+Epoch 3/9, current lr=3.5203658778440106e-05
+train loss: 0.011083, dev loss: 0.042811, accuracy: 98.90
+----------
+Epoch 4/9, current lr=1.0453658778440109e-05
+Copied best model weights!
+train loss: 0.004433, dev loss: 0.032369, accuracy: 99.12
+----------
+Epoch 5/9, current lr=1e-06
+Copied best model weights!
+train loss: 0.002572, dev loss: 0.029701, accuracy: 99.17
+----------
+Epoch 6/9, current lr=1.0453658778440097e-05
+train loss: 0.002437, dev loss: 0.036347, accuracy: 99.07
+----------
+Epoch 7/9, current lr=3.52036587784401e-05
+train loss: 0.004723, dev loss: 0.041891, accuracy: 98.93
+----------
+Epoch 8/9, current lr=6.57963412215599e-05
+train loss: 0.013257, dev loss: 0.043432, accuracy: 98.87
+----------
+Epoch 9/9, current lr=9.05463412215599e-05
+train loss: 0.017269, dev loss: 0.058156, accuracy: 98.68
+----------
+[ ]:
